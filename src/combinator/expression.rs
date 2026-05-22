@@ -650,4 +650,12 @@ mod tests {
         assert_eq!(parser().parse("+2+3*4"), Ok(14));
         assert_eq!(parser().parse("2*3+4"), Ok(10));
     }
+
+    #[expect(dead_code, reason = "This is a compile test")]
+    fn check_capturing_parser<'i>(
+    ) -> impl Parser<&'i str, Prefix<&'i str, i32, ContextError>, ContextError> {
+        let prefix = String::from("non-copy");
+
+        Prefix::new(10, move |_: &mut &str, _: i32| Ok(prefix.len() as i32))
+    }
 }
