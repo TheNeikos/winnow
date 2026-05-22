@@ -41,21 +41,20 @@ use crate::Result;
 ///
 /// fn parser<'i>() -> impl Parser<&'i str, i32, ContextError> {
 ///     move |i: &mut &str| {
-///         use Infix::*;
 ///         expression(digit1.parse_to::<i32>()) // operands are 32-bit integers
 ///             .prefix(dispatch! {any;
-///                 '-' => Prefix(12, |_, a: i32| Ok(-a)),
+///                 '-' => Prefix::new(12, |_, a: i32| Ok(-a)),
 ///                 _ => fail,
 ///             })
 ///             .infix(dispatch! {any;
-///                 '+' => Left(5, |_, a, b| Ok(a + b)),
-///                 '-' => Left(5, |_, a, b| Ok(a - b)),
-///                 '*' => Left(7, |_, a, b| Ok(a * b)),
-///                 '/' => Left(7, |_, a: i32, b| Ok(a.checked_div(b).unwrap_or_default())),
+///                 '+' => Infix::left(5, |_, a, b| Ok(a + b)),
+///                 '-' => Infix::left(5, |_, a, b| Ok(a - b)),
+///                 '*' => Infix::left(7, |_, a, b| Ok(a * b)),
+///                 '/' => Infix::left(7, |_, a: i32, b| Ok(a.checked_div(b).unwrap_or_default())),
 ///                 _ => fail,
 ///             })
 ///             .postfix(dispatch! {any;
-///                 '!' => Postfix(15, |_, a| if a < 1 { Ok(1) } else { Ok((1..=a).fold(1, |acc, a| acc*a)) }),
+///                 '!' => Postfix::new(15, |_, a| if a < 1 { Ok(1) } else { Ok((1..=a).fold(1, |acc, a| acc*a)) }),
 ///                 _ => fail,
 ///             })
 ///             .parse_next(i)
@@ -349,7 +348,7 @@ where
             return Err(E::assert(i, "`prefix` parsers must always consume"));
         }
         let operand = expression_impl(i, parse_operand, prefix, postfix, infix, power)?;
-        fold_prefix(i, operand)?
+        fold_prefix.call((i, (operand,)))?
     };
 
     // A variable to stop the `'parse` loop when `Assoc::Neither` with the same
@@ -369,7 +368,7 @@ where
                 i.reset(&start);
                 break 'parse;
             }
-            operand = fold_postfix(i, operand)?;
+            operand = fold_postfix.call((i, (operand,)))?;
 
             continue 'parse;
         }
@@ -399,7 +398,7 @@ where
             }
             prev_op_is_neither = is_neither;
             let rhs = expression_impl(i, parse_operand, prefix, postfix, infix, rpower)?;
-            operand = fold_infix(i, operand, rhs)?;
+            operand = fold_infix.call((i, (operand, rhs)))?;
 
             continue 'parse;
         }
@@ -410,6 +409,54 @@ where
     Ok(operand)
 }
 
+mod sealed {
+    #[allow(unnameable_types)]
+    pub trait ExpressionParserFn<I, R, O, E> {
+        fn call(&self, args: (&mut I, O)) -> Result<R, E>;
+
+        fn clone_box(&self) -> Box<dyn ExpressionParserFn<I, R, O, E>>;
+    }
+
+    impl<I, O, E, F> ExpressionParserFn<I, O, (O,), E> for F
+    where
+        F: for<'i> Fn(&'i mut I, O) -> Result<O, E>,
+        F: Clone + 'static,
+    {
+        fn call(&self, (input, output): (&mut I, (O,))) -> Result<O, E> {
+            (self)(input, output.0)
+        }
+
+        fn clone_box(&self) -> Box<dyn ExpressionParserFn<I, O, (O,), E>> {
+            let cloned: Self = self.clone();
+
+            Box::new(cloned)
+        }
+    }
+
+    impl<I, O, E, F> ExpressionParserFn<I, O, (O, O), E> for F
+    where
+        F: for<'i> Fn(&'i mut I, O, O) -> Result<O, E>,
+        F: Clone + 'static,
+    {
+        fn call(&self, (input, output): (&mut I, (O, O))) -> Result<O, E> {
+            (self)(input, output.0, output.1)
+        }
+
+        fn clone_box(&self) -> Box<dyn ExpressionParserFn<I, O, (O, O), E>> {
+            let cloned: Self = self.clone();
+
+            Box::new(cloned)
+        }
+    }
+
+    impl<I, O, E> Clone for Box<dyn ExpressionParserFn<I, O, O, E>> {
+        fn clone(&self) -> Self {
+            (*self).clone_box()
+        }
+    }
+}
+use sealed::ExpressionParserFn;
+
 /// Define an [`expression()`]'s prefix operator
 ///
 /// It requires an operator binding power, as well as a
@@ -418,13 +465,23 @@ pub struct Prefix<I, O, E>(
     /// Binding power
     pub i64,
     /// Unary operator
-    pub fn(&mut I, O) -> Result<O, E>,
+    pub Box<dyn ExpressionParserFn<I, O, (O,), E>>,
 );
+
+impl<I, O, E> Prefix<I, O, E> {
+    /// Create a new [`Prefix`] parser
+    pub fn new(
+        power: i64,
+        func: impl for<'a> Fn(&'a mut I, O) -> Result<O, E> + 'static + Clone,
+    ) -> Self {
+        Prefix(power, Box::new(func))
+    }
+}
 
 impl<I, O, E> Clone for Prefix<I, O, E> {
     #[inline(always)]
     fn clone(&self) -> Self {
-        Prefix(self.0, self.1)
+        Prefix(self.0, self.1.clone_box())
     }
 }
 
@@ -443,13 +500,23 @@ pub struct Postfix<I, O, E>(
     /// Binding power
     pub i64,
     /// Unary operator
-    pub fn(&mut I, O) -> Result<O, E>,
+    pub Box<dyn ExpressionParserFn<I, O, (O,), E>>,
 );
+
+impl<I, O, E> Postfix<I, O, E> {
+    /// Create a new [`Postfix`] parser
+    pub fn new(
+        power: i64,
+        func: impl for<'i> Fn(&mut I, O) -> Result<O, E> + Clone + 'static,
+    ) -> Self {
+        Postfix(power, Box::new(func))
+    }
+}
 
 impl<I, O, E> Clone for Postfix<I, O, E> {
     #[inline(always)]
     fn clone(&self) -> Self {
-        Postfix(self.0, self.1)
+        Postfix(self.0, self.1.clone_box())
     }
 }
 
@@ -474,7 +541,7 @@ pub enum Infix<I, O, E> {
         /// Binding power
         i64,
         /// Binary operator
-        fn(&mut I, O, O) -> Result<O, E>,
+        Box<dyn ExpressionParserFn<I, O, (O, O), E>>,
     ),
     /// Right-associative operator
     ///
@@ -485,7 +552,7 @@ pub enum Infix<I, O, E> {
         /// Binding power
         i64,
         /// Binary operator
-        fn(&mut I, O, O) -> Result<O, E>,
+        Box<dyn ExpressionParserFn<I, O, (O, O), E>>,
     ),
     /// Neither left or right associative
     ///
@@ -497,17 +564,43 @@ pub enum Infix<I, O, E> {
         /// Binding power
         i64,
         /// Binary operator
-        fn(&mut I, O, O) -> Result<O, E>,
+        Box<dyn ExpressionParserFn<I, O, (O, O), E>>,
     ),
+}
+
+impl<I, O, E> Infix<I, O, E> {
+    /// Create a new [`Infix::Left`] parser
+    pub fn left(
+        power: i64,
+        func: impl for<'i> Fn(&'i mut I, O, O) -> Result<O, E> + Clone + 'static,
+    ) -> Self {
+        Infix::Left(power, Box::new(func))
+    }
+
+    /// Create a new [`Infix::Right`] parser
+    pub fn right(
+        power: i64,
+        func: impl for<'i> Fn(&'i mut I, O, O) -> Result<O, E> + Clone + 'static,
+    ) -> Self {
+        Infix::Right(power, Box::new(func))
+    }
+
+    /// Create a new [`Infix::Neither`] parser
+    pub fn neither(
+        power: i64,
+        func: impl for<'i> Fn(&'i mut I, O, O) -> Result<O, E> + Clone + 'static,
+    ) -> Self {
+        Infix::Neither(power, Box::new(func))
+    }
 }
 
 impl<I, O, E> Clone for Infix<I, O, E> {
     #[inline(always)]
     fn clone(&self) -> Self {
         match self {
-            Infix::Left(p, f) => Infix::Left(*p, *f),
-            Infix::Right(p, f) => Infix::Right(*p, *f),
-            Infix::Neither(p, f) => Infix::Neither(*p, *f),
+            Infix::Left(p, f) => Infix::Left(*p, f.clone_box()),
+            Infix::Right(p, f) => Infix::Right(*p, f.clone_box()),
+            Infix::Neither(p, f) => Infix::Neither(*p, f.clone_box()),
         }
     }
 }
@@ -531,21 +624,20 @@ mod tests {
 
     fn parser<'i>() -> impl Parser<&'i str, i32, ContextError> {
         move |i: &mut &str| {
-            use Infix::*;
             expression(digit1.parse_to::<i32>())
                 .current_precedence_level(0)
                 .prefix(dispatch! {any;
-                    '+' => Prefix(12, |_, a| Ok(a)),
-                    '-' => Prefix(12, |_, a: i32| Ok(-a)),
+                    '+' => Prefix::new(12, |_, a| Ok(a)),
+                    '-' => Prefix::new(12, |_, a: i32| Ok(-a)),
                     _ => fail
                 })
                 .infix(dispatch! {any;
-                   '+' => Left(5, |_, a, b| Ok(a + b)),
-                   '-' => Left(5, |_, a, b| Ok(a - b)),
-                   '*' => Left(7, |_, a, b| Ok(a * b)),
-                   '/' => Left(7, |_, a, b| Ok(a / b)),
-                   '%' => Left(7, |_, a, b| Ok(a % b)),
-                   '^' => Left(9, |_, a, b| Ok(a ^ b)),
+                   '+' => Infix::left(5, |_, a, b| Ok(a + b)),
+                   '-' => Infix::left(5, |_, a, b| Ok(a - b)),
+                   '*' => Infix::left(7, |_, a, b| Ok(a * b)),
+                   '/' => Infix::left(7, |_, a, b| Ok(a / b)),
+                   '%' => Infix::left(7, |_, a, b| Ok(a % b)),
+                   '^' => Infix::left(9, |_, a, b| Ok(a ^ b)),
                    _ => fail
                 })
                 .parse_next(i)

@@ -200,7 +200,6 @@ pub(crate) enum Expr {
 pub(crate) fn pratt_parser(i: &mut &str) -> ModalResult<Expr> {
     fn parser<'i>(precedence: i64) -> impl Parser<&'i str, Expr, ErrMode<ContextError>> {
         move |i: &mut &str| {
-            use Infix::{Left, Neither, Right};
             expression(
                 // parsing an operand, optionally surrounded by whitespace
                 delimited(
@@ -229,18 +228,18 @@ pub(crate) fn pratt_parser(i: &mut &str) -> ModalResult<Expr> {
                     dispatch! {any;
                         '+' => alt((
                             // ++
-                            '+'.value(Prefix(18, |_: &mut _, a| Ok(Expr::PreIncr(Box::new(a))))),
-                            Prefix(18, |_: &mut _, a| Ok(a) )
+                            '+'.value(Prefix::new(18, |_: &mut _, a| Ok(Expr::PreIncr(Box::new(a))))),
+                            Prefix::new(18, |_: &mut _, a| Ok(a) )
                         )),
                         '-' =>  alt((
                             // --
-                            '-'.value(Prefix(18, |_: &mut _, a| Ok(Expr::PreDecr(Box::new(a))))),
-                            Prefix(18, |_: &mut _, a| Ok(Expr::Neg(Box::new(a))))
+                            '-'.value(Prefix::new(18, |_: &mut _, a| Ok(Expr::PreDecr(Box::new(a))))),
+                            Prefix::new(18, |_: &mut _, a| Ok(Expr::Neg(Box::new(a))))
                         )),
-                        '&' => Prefix(18, |_: &mut _, a| Ok(Expr::Addr(Box::new(a)))),
-                        '*' => Prefix(18, |_: &mut _, a| Ok(Expr::Deref(Box::new(a)))),
-                        '!' => Prefix(18, |_: &mut _, a| Ok(Expr::Not(Box::new(a)))),
-                        '~' => Prefix(18, |_: &mut _, a| Ok(Expr::BitwiseNot(Box::new(a)))),
+                        '&' => Prefix::new(18, |_: &mut _, a| Ok(Expr::Addr(Box::new(a)))),
+                        '*' => Prefix::new(18, |_: &mut _, a| Ok(Expr::Deref(Box::new(a)))),
+                        '!' => Prefix::new(18, |_: &mut _, a| Ok(Expr::Not(Box::new(a)))),
+                        '~' => Prefix::new(18, |_: &mut _, a| Ok(Expr::BitwiseNot(Box::new(a)))),
                         _ => fail
                     },
                     multispace0,
@@ -256,24 +255,24 @@ pub(crate) fn pratt_parser(i: &mut &str) -> ModalResult<Expr> {
                     multispace0,
                     alt((
                         dispatch! {any;
-                            '!' => not('=').value(Postfix(19, |_: &mut _, a| Ok(Expr::Fac(Box::new(a))))),
-                            '?' => Postfix(3, |i: &mut &str, cond| {
+                            '!' => not('=').value(Postfix::new(19, |_: &mut _, a| Ok(Expr::Fac(Box::new(a))))),
+                            '?' => Postfix::new(3, |i: &mut &str, cond| {
                                 let (left, right) = cut_err(separated_pair(parser(0), delimited(multispace0, ':', multispace0), parser(3))).parse_next(i)?;
                                 Ok(Expr::Ternary(Box::new(cond), Box::new(left), Box::new(right)))
                             }),
-                            '[' => Postfix(20, |i: &mut &str, a| {
+                            '[' => Postfix::new(20, |i: &mut &str, a| {
                                 let index = delimited(multispace0, parser(0), (multispace0, cut_err(']'), multispace0)).parse_next(i)?;
                                 Ok(Expr::Index(Box::new(a), Box::new(index)))
                             }),
-                            '(' => Postfix(20, |i: &mut &str, a| {
+                            '(' => Postfix::new(20, |i: &mut &str, a| {
                                 let args = delimited(multispace0, opt(parser(0)), (multispace0, cut_err(')'), multispace0)).parse_next(i)?;
                                 Ok(Expr::FunctionCall(Box::new(a), args.map(Box::new)))
                             }),
                             _ => fail,
                         },
                         dispatch! {take(2usize);
-                            "++" => Postfix(20, |_: &mut _, a| Ok(Expr::PostIncr(Box::new(a)))),
-                            "--" => Postfix(20, |_: &mut _, a| Ok(Expr::PostDecr(Box::new(a)))),
+                            "++" => Postfix::new(20, |_: &mut _, a| Ok(Expr::PostIncr(Box::new(a)))),
+                            "--" => Postfix::new(20, |_: &mut _, a| Ok(Expr::PostDecr(Box::new(a)))),
                             _ => fail,
                         },
                     )),
@@ -294,56 +293,56 @@ pub(crate) fn pratt_parser(i: &mut &str) -> ModalResult<Expr> {
                     dispatch! {any;
                         '*' => alt((
                             // **
-                            "*".value(Right(28, |_: &mut _, a, b| Ok(Expr::Pow(Box::new(a), Box::new(b))))),
-                            Left(16, |_: &mut _, a, b| Ok(Expr::Mul(Box::new(a), Box::new(b)))),
+                            "*".value(Infix::right(28, |_: &mut _, a, b| Ok(Expr::Pow(Box::new(a), Box::new(b))))),
+                            Infix::left(16, |_: &mut _, a, b| Ok(Expr::Mul(Box::new(a), Box::new(b)))),
                         )),
-                        '/' => Left(16, |_: &mut _, a, b| Ok(Expr::Div(Box::new(a), Box::new(b)))),
-                        '%' => Left(16, |_: &mut _, a, b| Ok(Expr::Rem(Box::new(a), Box::new(b)))),
+                        '/' => Infix::left(16, |_: &mut _, a, b| Ok(Expr::Div(Box::new(a), Box::new(b)))),
+                        '%' => Infix::left(16, |_: &mut _, a, b| Ok(Expr::Rem(Box::new(a), Box::new(b)))),
 
-                        '+' => Left(14, |_: &mut _, a, b| Ok(Expr::Add(Box::new(a), Box::new(b)))),
+                        '+' => Infix::left(14, |_: &mut _, a, b| Ok(Expr::Add(Box::new(a), Box::new(b)))),
                         '-' => alt((
                             dispatch!{take(2usize);
-                                "ne" => Neither(10, |_: &mut _, a, b| Ok(Expr::NotEq(Box::new(a), Box::new(b)))),
-                                "eq" => Neither(10, |_: &mut _, a, b| Ok(Expr::Eq(Box::new(a), Box::new(b)))),
-                                "gt" => Neither(12, |_: &mut _, a, b| Ok(Expr::Greater(Box::new(a), Box::new(b)))),
-                                "ge" => Neither(12, |_: &mut _, a, b| Ok(Expr::GreaterEqual(Box::new(a), Box::new(b)))),
-                                "lt" => Neither(12, |_: &mut _, a, b| Ok(Expr::Less(Box::new(a), Box::new(b)))),
-                                "le" => Neither(12, |_: &mut _, a, b| Ok(Expr::LessEqual(Box::new(a), Box::new(b)))),
+                                "ne" => Infix::neither(10, |_: &mut _, a, b| Ok(Expr::NotEq(Box::new(a), Box::new(b)))),
+                                "eq" => Infix::neither(10, |_: &mut _, a, b| Ok(Expr::Eq(Box::new(a), Box::new(b)))),
+                                "gt" => Infix::neither(12, |_: &mut _, a, b| Ok(Expr::Greater(Box::new(a), Box::new(b)))),
+                                "ge" => Infix::neither(12, |_: &mut _, a, b| Ok(Expr::GreaterEqual(Box::new(a), Box::new(b)))),
+                                "lt" => Infix::neither(12, |_: &mut _, a, b| Ok(Expr::Less(Box::new(a), Box::new(b)))),
+                                "le" => Infix::neither(12, |_: &mut _, a, b| Ok(Expr::LessEqual(Box::new(a), Box::new(b)))),
                                 _ => fail
                             },
-                            '>'.value(Left(20, |_: &mut _, a, b| Ok(Expr::ArrowOp(Box::new(a), Box::new(b))))),
-                            Left(14, |_: &mut _, a, b| Ok(Expr::Sub(Box::new(a), Box::new(b))))
+                            '>'.value(Infix::left(20, |_: &mut _, a, b| Ok(Expr::ArrowOp(Box::new(a), Box::new(b))))),
+                            Infix::left(14, |_: &mut _, a, b| Ok(Expr::Sub(Box::new(a), Box::new(b))))
                         )),
-                        '.' => Left(20, |_: &mut _, a, b| Ok(Expr::Dot(Box::new(a), Box::new(b)))),
+                        '.' => Infix::left(20, |_: &mut _, a, b| Ok(Expr::Dot(Box::new(a), Box::new(b)))),
                         '&' => alt((
                             // &&
-                            "&".value(Left(6, |_: &mut _, a, b| Ok(Expr::And(Box::new(a), Box::new(b))))),
+                            "&".value(Infix::left(6, |_: &mut _, a, b| Ok(Expr::And(Box::new(a), Box::new(b))))),
 
-                            Left(12, |_: &mut _, a, b| Ok(Expr::BitAnd(Box::new(a), Box::new(b)))),
+                            Infix::left(12, |_: &mut _, a, b| Ok(Expr::BitAnd(Box::new(a), Box::new(b)))),
                         )),
-                        '^' => Left(8, |_: &mut _, a, b| Ok(Expr::BitXor(Box::new(a), Box::new(b)))),
+                        '^' => Infix::left(8, |_: &mut _, a, b| Ok(Expr::BitXor(Box::new(a), Box::new(b)))),
                         '=' => alt((
                             // ==
-                            "=".value(Neither(10, |_: &mut _, a, b| Ok(Expr::Eq(Box::new(a), Box::new(b))))),
-                            Right(2, |_: &mut _, a, b| Ok(Expr::Assign(Box::new(a), Box::new(b))))
+                            "=".value(Infix::neither(10, |_: &mut _, a, b| Ok(Expr::Eq(Box::new(a), Box::new(b))))),
+                            Infix::right(2, |_: &mut _, a, b| Ok(Expr::Assign(Box::new(a), Box::new(b))))
                         )),
 
                         '>' => alt((
                             // >=
-                            "=".value(Neither(12, |_: &mut _, a, b| Ok(Expr::GreaterEqual(Box::new(a), Box::new(b))))),
-                            Neither(12, |_: &mut _, a, b| Ok(Expr::Greater(Box::new(a), Box::new(b))))
+                            "=".value(Infix::neither(12, |_: &mut _, a, b| Ok(Expr::GreaterEqual(Box::new(a), Box::new(b))))),
+                            Infix::neither(12, |_: &mut _, a, b| Ok(Expr::Greater(Box::new(a), Box::new(b))))
                         )),
                         '<' => alt((
                             // <=
-                            "=".value(Neither(12, |_: &mut _, a, b| Ok(Expr::LessEqual(Box::new(a), Box::new(b))))),
-                            Neither(12, |_: &mut _, a, b| Ok(Expr::Less(Box::new(a), Box::new(b))))
+                            "=".value(Infix::neither(12, |_: &mut _, a, b| Ok(Expr::LessEqual(Box::new(a), Box::new(b))))),
+                            Infix::neither(12, |_: &mut _, a, b| Ok(Expr::Less(Box::new(a), Box::new(b))))
                         )),
-                        ',' => Left(0, |_: &mut _, a, b| Ok(Expr::Comma(Box::new(a), Box::new(b)))),
+                        ',' => Infix::left(0, |_: &mut _, a, b| Ok(Expr::Comma(Box::new(a), Box::new(b)))),
                         _ => fail
                     },
                     dispatch! {take(2usize);
-                        "!=" => Neither(10, |_: &mut _, a, b| Ok(Expr::NotEq(Box::new(a), Box::new(b)))),
-                        "||" => Left(4, |_: &mut _, a, b| Ok(Expr::Or(Box::new(a), Box::new(b)))),
+                        "!=" => Infix::neither(10, |_: &mut _, a, b| Ok(Expr::NotEq(Box::new(a), Box::new(b)))),
+                        "||" => Infix::left(4, |_: &mut _, a, b| Ok(Expr::Or(Box::new(a), Box::new(b)))),
                         _ => fail
                     },
                 )),
